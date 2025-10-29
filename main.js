@@ -604,7 +604,7 @@ async function handleWireGuardLocation(chatId, userId, username, country, env, c
   const flag = getCountryFlag(country);
   const countryName = getCountryName(country);
   
-  // Build DNS keyboard from available DNS
+  // Build DNS keyboard from available DNS with count
   const keyboard = [];
   const ipv4DNS = availableDNS.filter(d => d.type === 'ipv4');
   const ipv6DNS = availableDNS.filter(d => d.type === 'ipv6');
@@ -629,7 +629,7 @@ async function handleWireGuardLocation(chatId, userId, username, country, env, c
   
   keyboard.push([{ text: '🔙 بازگشت', callback_data: 'back_to_main' }]);
   
-  const message = `${flag} <b>${countryName}</b>\n\n🌐 <b>انتخاب سرور DNS</b>\n\n💡 <i>یکی از سرورهای DNS موجود را انتخاب کنید:\n\n🌐 = IPv4 DNS\n🌍 = IPv6 DNS\n\n📌 سرور تانل پیش‌فرض: <code>8.8.8.8</code>\n(می‌توانید بعداً در فایل کانفیگ تغییر دهید)</i>`;
+  const message = `${flag} <b>${countryName}</b>\n\n🌐 <b>انتخاب سرور DNS</b>\n\n💡 <i>یکی از سرورهای DNS موجود را انتخاب کنید:\n\n🌐 = IPv4 DNS (${ipv4DNS.length} عدد)\n🌍 = IPv6 DNS (${ipv6DNS.length} عدد)\n\n📌 سرور تانل پیش‌فرض: <code>8.8.8.8</code>\n(می‌توانید بعداً در فایل کانفیگ تغییر دهید)</i>`;
   
   await sendTelegramMessage(env.BOT_TOKEN, chatId, message, { inline_keyboard: keyboard });
 }
