@@ -64,22 +64,91 @@ export async function handleEndpointCountrySelection(chatId, country, env, callb
   await sendTelegramMessage(env.BOT_TOKEN, chatId, message);
 }
 
+// Detect country from IP using API
+async function detectCountryFromIP(ip) {
+  try {
+    const response = await fetch(`https://api.iplocation.net/?cmd=ip-country&ip=${ip}`);
+    const data = await response.json();
+    
+    if (data && data.country_code2) {
+      return {
+        code: data.country_code2.toUpperCase(),
+        name: data.country_name || 'Unknown'
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error('Error detecting country:', error);
+    return null;
+  }
+}
+
+// Add country to system if not exists
+async function addCountryIfNotExists(env, countryCode, countryName) {
+  const countriesKey = 'countries:list';
+  const countriesData = await env.DB.get(countriesKey);
+  
+  let countries = [];
+  if (countriesData) {
+    countries = JSON.parse(countriesData);
+  }
+  
+  // Check if country already exists
+  const exists = countries.some(c => c.code === countryCode);
+  
+  if (!exists) {
+    countries.push({
+      code: countryCode,
+      name: countryName,
+      addedAt: new Date().toISOString(),
+      autoAdded: true
+    });
+    
+    await env.DB.put(countriesKey, JSON.stringify(countries));
+    return true;
+  }
+  
+  return false;
+}
+
 // Process endpoints list
 export async function processEndpoints(chatId, text, env, sendTelegramMessage, getAdminKeyboard, getCountryFlag, getCountryName) {
-  const country = await env.DB.get(`session:${chatId}:endpoint_country`);
+  const selectedCountry = await env.DB.get(`session:${chatId}:endpoint_country`);
   
   const lines = text.split('\n').filter(line => line.trim());
   let successCount = 0;
   let failCount = 0;
+  let autoDetectedCount = 0;
+  let newCountriesAdded = [];
   
   for (const line of lines) {
     const trimmed = line.trim();
     // Validate IP:PORT format
     if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]+$/.test(trimmed)) {
-      const endpointId = `endpoint:${country}:${Date.now()}:${Math.random().toString(36).substring(7)}`;
+      // Extract IP without port
+      const ip = trimmed.split(':')[0];
+      
+      // Try to detect country from IP
+      let detectedCountry = await detectCountryFromIP(ip);
+      
+      let finalCountry = selectedCountry;
+      
+      if (detectedCountry) {
+        // Add country to system if not exists
+        const wasAdded = await addCountryIfNotExists(env, detectedCountry.code, detectedCountry.name);
+        if (wasAdded) {
+          newCountriesAdded.push(`${detectedCountry.code} (${detectedCountry.name})`);
+        }
+        
+        // Use detected country
+        finalCountry = detectedCountry.code;
+        autoDetectedCount++;
+      }
+      
+      const endpointId = `endpoint:${finalCountry}:${Date.now()}:${Math.random().toString(36).substring(7)}`;
       const endpointData = {
         address: trimmed,
-        country,
+        country: finalCountry,
         usageCount: 0,
         createdAt: new Date().toISOString()
       };
@@ -90,13 +159,23 @@ export async function processEndpoints(chatId, text, env, sendTelegramMessage, g
     }
   }
   
-  const flag = getCountryFlag(country);
-  const countryName = getCountryName(country);
+  const flag = getCountryFlag(selectedCountry);
+  const countryName = getCountryName(selectedCountry);
+  
+  let message = `✅ <b>Endpoint ها اضافه شدند</b>\n\n${flag} کشور انتخابی: ${countryName}\n✔️ موفق: ${successCount}\n❌ نامعتبر: ${failCount}`;
+  
+  if (autoDetectedCount > 0) {
+    message += `\n🌍 تشخیص خودکار: ${autoDetectedCount}`;
+  }
+  
+  if (newCountriesAdded.length > 0) {
+    message += `\n\n🆕 <b>کشورهای جدید اضافه شده:</b>\n${newCountriesAdded.map(c => `  • ${c}`).join('\n')}`;
+  }
   
   await sendTelegramMessage(
     env.BOT_TOKEN,
     chatId,
-    `✅ <b>Endpoint ها اضافه شدند</b>\n\n${flag} کشور: ${countryName}\n✔️ موفق: ${successCount}\n❌ نامعتبر: ${failCount}`,
+    message,
     getAdminKeyboard()
   );
 }
@@ -154,6 +233,7 @@ export async function processDNSList(chatId, text, env, sendTelegramMessage, get
   const lines = text.split('\n').filter(line => line.trim());
   let successCount = 0;
   let failCount = 0;
+  let newCountriesAdded = [];
   
   for (const line of lines) {
     const trimmed = line.trim();
@@ -161,11 +241,29 @@ export async function processDNSList(chatId, text, env, sendTelegramMessage, get
     const isIPv6 = /^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$/.test(trimmed);
     
     if ((dnsType === 'ipv4' && isIPv4) || (dnsType === 'ipv6' && isIPv6)) {
+      let finalCountry = country;
+      
+      // For IPv4, try to detect country
+      if (dnsType === 'ipv4') {
+        const detectedCountry = await detectCountryFromIP(trimmed);
+        
+        if (detectedCountry) {
+          // Add country to system if not exists
+          const wasAdded = await addCountryIfNotExists(env, detectedCountry.code, detectedCountry.name);
+          if (wasAdded) {
+            newCountriesAdded.push(`${detectedCountry.code} (${detectedCountry.name})`);
+          }
+          
+          // Use detected country
+          finalCountry = detectedCountry.code;
+        }
+      }
+      
       const dnsId = `dns:${Date.now()}:${Math.random().toString(36).substring(7)}`;
       const dnsData = {
         address: trimmed,
         type: dnsType,
-        country,
+        country: finalCountry,
         usageCount: 0,
         createdAt: new Date().toISOString()
       };
@@ -179,10 +277,16 @@ export async function processDNSList(chatId, text, env, sendTelegramMessage, get
   const flag = getCountryFlag(country);
   const countryName = getCountryName(country);
   
+  let message = `✅ <b>DNS ها اضافه شدند</b>\n\n${flag} کشور انتخابی: ${countryName}\n📡 نوع: ${dnsType === 'ipv4' ? 'IPv4' : 'IPv6'}\n✔️ موفق: ${successCount}\n❌ نامعتبر: ${failCount}`;
+  
+  if (newCountriesAdded.length > 0) {
+    message += `\n\n🆕 <b>کشورهای جدید اضافه شده:</b>\n${newCountriesAdded.map(c => `  • ${c}`).join('\n')}`;
+  }
+  
   await sendTelegramMessage(
     env.BOT_TOKEN,
     chatId,
-    `✅ <b>DNS ها اضافه شدند</b>\n\n${flag} کشور: ${countryName}\n📡 نوع: ${dnsType === 'ipv4' ? 'IPv4' : 'IPv6'}\n✔️ موفق: ${successCount}\n❌ نامعتبر: ${failCount}`,
+    message,
     getAdminKeyboard()
   );
 }

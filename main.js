@@ -465,6 +465,12 @@ function getAdminKeyboard() {
 
 // Get country keyboard for DNS/Endpoint selection
 function getCountryKeyboard(type) {
+  // Determine back button based on type
+  let backButton = 'admin_panel';
+  if (type === 'wg_location') {
+    backButton = 'back_to_main';
+  }
+  
   return {
     inline_keyboard: [
       [
@@ -473,7 +479,7 @@ function getCountryKeyboard(type) {
         { text: '🇧🇪 بلژیک', callback_data: `country_BE_${type}` }
       ],
       [
-        { text: '🔙 بازگشت', callback_data: 'admin_panel' }
+        { text: '🔙 بازگشت', callback_data: backButton }
       ]
     ]
   };
@@ -561,20 +567,100 @@ async function handleWireGuardButton(chatId, userId, username, env, callbackQuer
   await sendTelegramMessage(env.BOT_TOKEN, chatId, message, keyboard);
 }
 
-// Handle WireGuard location selection
+// Handle WireGuard location selection - show available DNS
 async function handleWireGuardLocation(chatId, userId, username, country, env, callbackQueryId) {
   await answerCallbackQuery(env.BOT_TOKEN, callbackQueryId);
   
   await env.DB.put(`session:${chatId}:wg_country`, country, { expirationTtl: 300 });
   
+  // Get available DNS for this country
+  const dnsList = await env.DB.list({ prefix: 'dns:' });
+  const availableDNS = [];
+  
+  for (const key of dnsList.keys) {
+    const data = await env.DB.get(key.name);
+    if (data) {
+      const dns = JSON.parse(data);
+      if (dns.country === country && dns.usageCount < 3) {
+        availableDNS.push({
+          id: key.name,
+          address: dns.address,
+          type: dns.type
+        });
+      }
+    }
+  }
+  
+  if (availableDNS.length === 0) {
+    await sendTelegramMessage(
+      env.BOT_TOKEN,
+      chatId,
+      '⚠️ متأسفانه DNS برای این کشور موجود نیست. لطفاً کشور دیگری انتخاب کنید یا با ادمین تماس بگیرید.',
+      getMainKeyboard(false)
+    );
+    return;
+  }
+  
   const flag = getCountryFlag(country);
   const countryName = getCountryName(country);
-  const message = `${flag} <b>${countryName}</b>\n\n🌐 <b>انتخاب سرویس DNS</b>\n\n💡 <i>DNS مناسب خود را انتخاب کنید:\n\n🌍 بین‌المللی - برای دسترسی جهانی\n📡 ایرانی - برای سرعت بیشتر در ایران</i>`;
   
-  await sendTelegramMessage(env.BOT_TOKEN, chatId, message, getDNSKeyboard());
+  // Build DNS keyboard from available DNS
+  const keyboard = [];
+  const ipv4DNS = availableDNS.filter(d => d.type === 'ipv4');
+  const ipv6DNS = availableDNS.filter(d => d.type === 'ipv6');
+  
+  if (ipv4DNS.length > 0) {
+    ipv4DNS.forEach(dns => {
+      keyboard.push([{
+        text: `🌐 ${dns.address}`,
+        callback_data: `wg_dns_custom_${dns.id}`
+      }]);
+    });
+  }
+  
+  if (ipv6DNS.length > 0) {
+    ipv6DNS.forEach(dns => {
+      keyboard.push([{
+        text: `🌍 ${dns.address}`,
+        callback_data: `wg_dns_custom_${dns.id}`
+      }]);
+    });
+  }
+  
+  keyboard.push([{ text: '🔙 بازگشت', callback_data: 'back_to_main' }]);
+  
+  const message = `${flag} <b>${countryName}</b>\n\n🌐 <b>انتخاب سرور DNS</b>\n\n💡 <i>یکی از سرورهای DNS موجود را انتخاب کنید:\n\n🌐 = IPv4 DNS\n🌍 = IPv6 DNS\n\n📌 سرور تانل پیش‌فرض: <code>8.8.8.8</code>\n(می‌توانید بعداً در فایل کانفیگ تغییر دهید)</i>`;
+  
+  await sendTelegramMessage(env.BOT_TOKEN, chatId, message, { inline_keyboard: keyboard });
 }
 
-// Handle DNS selection - ask about keepalive
+// Handle custom DNS selection from database
+async function handleCustomDNSSelection(chatId, userId, username, dnsId, env, callbackQueryId) {
+  await answerCallbackQuery(env.BOT_TOKEN, callbackQueryId);
+  
+  // Get DNS details
+  const dnsData = await env.DB.get(dnsId);
+  if (!dnsData) {
+    await sendTelegramMessage(
+      env.BOT_TOKEN,
+      chatId,
+      '⚠️ DNS انتخابی موجود نیست. لطفاً دوباره تلاش کنید.',
+      getMainKeyboard(false)
+    );
+    return;
+  }
+  
+  const dns = JSON.parse(dnsData);
+  
+  // Store DNS ID
+  await env.DB.put(`session:${chatId}:wg_dns_id`, dnsId, { expirationTtl: 300 });
+  
+  const message = `🌐 <b>سرور DNS انتخاب شد</b>\n\n📍 آدرس: <code>${dns.address}</code>\n📡 نوع: ${dns.type === 'ipv4' ? 'IPv4' : 'IPv6'}\n\n⏱️ <b>PersistentKeepalive</b>\n\n💡 آیا می‌خواهید قابلیت PersistentKeepalive فعال باشد؟\n\n<i>✅ توصیه می‌شود: این قابلیت اتصال را پایدار نگه می‌دارد و قطعی را کاهش می‌دهد.</i>`;
+  
+  await sendTelegramMessage(env.BOT_TOKEN, chatId, message, getKeepaliveKeyboard());
+}
+
+// Handle DNS selection - ask about keepalive (old method - for predefined DNS)
 async function handleWireGuardDNSSelection(chatId, userId, username, dnsProvider, env, callbackQueryId) {
   await answerCallbackQuery(env.BOT_TOKEN, callbackQueryId);
   
@@ -593,11 +679,33 @@ async function handleKeepaliveSelection(chatId, userId, username, keepalive, env
   
   try {
     // Get selected country and DNS
-    const country = await env.DB.get(`session:${chatId}:wg_country`) || 'US';
-    const dnsProvider = await env.DB.get(`session:${chatId}:wg_dns`) || 'cloudflare_google';
+    const country = await env.DB.get(`session:${chatId}:wg_country`) || 'CA';
+    const dnsId = await env.DB.get(`session:${chatId}:wg_dns_id`);
     
     await env.DB.delete(`session:${chatId}:wg_country`);
-    await env.DB.delete(`session:${chatId}:wg_dns`);
+    await env.DB.delete(`session:${chatId}:wg_dns_id`);
+    
+    // Get DNS from database
+    let dnsServers = '8.8.8.8'; // Default tunnel server
+    let dnsAddress = '8.8.8.8';
+    
+    if (dnsId) {
+      const dnsData = await env.DB.get(dnsId);
+      if (dnsData) {
+        const dns = JSON.parse(dnsData);
+        dnsAddress = dns.address;
+        dnsServers = `${dns.address}, 8.8.8.8`; // DNS + tunnel server
+        
+        // Increment DNS usage
+        dns.usageCount = (dns.usageCount || 0) + 1;
+        await env.DB.put(dnsId, JSON.stringify(dns));
+        
+        // Delete if usage reached limit
+        if (dns.usageCount >= 3) {
+          await env.DB.delete(dnsId);
+        }
+      }
+    }
     
     // Generate keys
     const { privateKey, publicKey } = await generateWireGuardKeys();
@@ -618,10 +726,6 @@ async function handleKeepaliveSelection(chatId, userId, username, keepalive, env
     
     const serverPublicKey = env.WG_SERVER_PUBLIC_KEY || 'YOUR_SERVER_PUBLIC_KEY';
     
-    // Get DNS servers
-    const dnsServers = DNS_PROVIDERS[dnsProvider].dns;
-    const dnsName = DNS_PROVIDERS[dnsProvider].name;
-    
     // Create config with keepalive option
     const config = createWireGuardConfig(privateKey, publicKey, clientIP, serverPublicKey, endpoint.address, dnsServers, keepalive);
     
@@ -634,7 +738,7 @@ async function handleKeepaliveSelection(chatId, userId, username, keepalive, env
       username,
       publicKey,
       clientIP,
-      dnsProvider,
+      dnsAddress,
       country,
       endpoint: endpoint.address,
       keepalive,
@@ -659,7 +763,7 @@ async function handleKeepaliveSelection(chatId, userId, username, keepalive, env
     const keepaliveStatus = keepalive ? '✅ فعال' : '❌ غیرفعال';
     
     // Send config as file
-    const caption = `✨ <b>کانفیگ WireGuard شما آماده است</b>\n\n🎯 نام فایل: <code>${filename}</code>\n${flag} لوکیشن: ${countryName}\n🌐 IP: <code>${clientIP}</code>\n${dnsName} DNS: فعال\n⏱️ Keepalive: ${keepaliveStatus}\n⏰ ${new Date().toLocaleString('fa-IR')}`;
+    const caption = `✨ <b>کانفیگ WireGuard شما آماده است!</b>\n\n🎯 <b>مشخصات کانفیگ:</b>\n━━━━━━━━━━━━━━━━\n📄 نام فایل: <code>${filename}</code>\n${flag} لوکیشن: <b>${countryName}</b>\n🌐 آدرس IP: <code>${clientIP}</code>\n🔐 DNS سرور: <code>${dnsAddress}</code>\n📡 تانل سرور: <code>8.8.8.8</code>\n⏱️ Keepalive: ${keepaliveStatus}\n━━━━━━━━━━━━━━━━\n\n💡 <i>می‌توانید سرور تانل (8.8.8.8) را در فایل کانفیگ با سرور دلخواه خود جایگزین کنید.</i>\n\n⏰ ${new Date().toLocaleString('fa-IR')}`;
     
     await sendTelegramDocument(env.BOT_TOKEN, chatId, filename, config, caption);
     
@@ -1131,6 +1235,9 @@ export async function handleUpdate(update, env, ctx) {
       } else if (data.startsWith('country_') && data.includes('_wg_location')) {
         const country = data.replace('country_', '').replace('_wg_location', '');
         await handleWireGuardLocation(chatId, userId, username, country, env, callbackQuery.id);
+      } else if (data.startsWith('wg_dns_custom_')) {
+        const dnsId = data.replace('wg_dns_custom_', '');
+        await handleCustomDNSSelection(chatId, userId, username, dnsId, env, callbackQuery.id);
       } else if (data.startsWith('wg_dns_')) {
         const dnsProvider = data.replace('wg_dns_', '');
         await handleWireGuardDNSSelection(chatId, userId, username, dnsProvider, env, callbackQuery.id);
@@ -1687,6 +1794,8 @@ function generateWebPanel() {
       const addresses = document.getElementById('endpointAddresses').value.split('\\n').filter(l => l.trim());
       
       let successCount = 0;
+      let autoDetectedCount = 0;
+      let newCountries = [];
       for (const address of addresses) {
         try {
           const r = await fetch('/api/endpoints/add', {
@@ -1694,12 +1803,28 @@ function generateWebPanel() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ country, address: address.trim() })
           });
-          if (r.ok) successCount++;
+          if (r.ok) {
+            successCount++;
+            const data = await r.json();
+            if (data.detectedCountry) {
+              autoDetectedCount++;
+            }
+            if (data.countryAdded && !newCountries.includes(data.countryAdded)) {
+              newCountries.push(data.countryAdded);
+            }
+          }
         } catch (e) {}
       }
       
       closeModal('addEndpointModal');
-      alert(\`✅ \${successCount} Endpoint اضافه شد\`);
+      let msg = \`✅ \${successCount} Endpoint اضافه شد\`;
+      if (autoDetectedCount > 0) {
+        msg += \`\\n🌍 \${autoDetectedCount} مورد به صورت خودکار به کشور واقعی اضافه شد\`;
+      }
+      if (newCountries.length > 0) {
+        msg += \`\\n\\n🆕 کشورهای جدید:\\n\${newCountries.join('\\n')}\`;
+      }
+      alert(msg);
       loadEndpoints();
       loadStats();
       document.getElementById('endpointAddresses').value = '';
@@ -2068,21 +2193,89 @@ async function getEndpointsListAPI(env) {
   });
 }
 
+// Detect country from IP using API
+async function detectCountryFromIP(ip) {
+  try {
+    const response = await fetch(`https://api.iplocation.net/?cmd=ip-country&ip=${ip}`);
+    const data = await response.json();
+    
+    if (data && data.country_code2) {
+      return {
+        code: data.country_code2.toUpperCase(),
+        name: data.country_name || 'Unknown'
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error('Error detecting country:', error);
+    return null;
+  }
+}
+
+// Add country to system if not exists
+async function addCountryIfNotExists(env, countryCode, countryName) {
+  const countriesKey = 'countries:list';
+  const countriesData = await env.DB.get(countriesKey);
+  
+  let countries = [];
+  if (countriesData) {
+    countries = JSON.parse(countriesData);
+  }
+  
+  // Check if country already exists
+  const exists = countries.some(c => c.code === countryCode);
+  
+  if (!exists) {
+    countries.push({
+      code: countryCode,
+      name: countryName,
+      addedAt: new Date().toISOString(),
+      autoAdded: true
+    });
+    
+    await env.DB.put(countriesKey, JSON.stringify(countries));
+    return true;
+  }
+  
+  return false;
+}
+
 // API: Add endpoint
 async function addEndpointAPI(request, env) {
   const { country, address } = await request.json();
   
-  const endpointId = `endpoint:${country}:${Date.now()}:${Math.random().toString(36).substring(7)}`;
+  // Extract IP without port
+  const ip = address.split(':')[0];
+  
+  // Try to detect country from IP
+  let detectedCountry = await detectCountryFromIP(ip);
+  
+  let finalCountry = country;
+  let countryAdded = false;
+  
+  if (detectedCountry) {
+    // Add country to system if not exists
+    countryAdded = await addCountryIfNotExists(env, detectedCountry.code, detectedCountry.name);
+    
+    // Use detected country
+    finalCountry = detectedCountry.code;
+  }
+  
+  const endpointId = `endpoint:${finalCountry}:${Date.now()}:${Math.random().toString(36).substring(7)}`;
   const endpointData = {
     address,
-    country,
+    country: finalCountry,
     usageCount: 0,
     createdAt: new Date().toISOString()
   };
   
   await env.DB.put(endpointId, JSON.stringify(endpointData));
   
-  return new Response(JSON.stringify({ success: true, id: endpointId }), {
+  return new Response(JSON.stringify({ 
+    success: true,
+    detectedCountry: finalCountry !== country ? finalCountry : null,
+    countryAdded: countryAdded ? `${detectedCountry.code} (${detectedCountry.name})` : null
+  }), {
     headers: { 'Content-Type': 'application/json' }
   });
 }
