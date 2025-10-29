@@ -169,10 +169,67 @@ function cswap(swap, a, b) {
   return [a, b];
 }
 
-// Generate random IPv4 in 10.0.0.0/24 range
-function generateClientIP(userId) {
-  const hash = userId % 250 + 2;
-  return `10.0.0.${hash}`;
+// Generate client IP from CIDR ranges
+async function generateClientIP(userId, country, env) {
+  // Get CIDR ranges for country
+  const ranges = await getCIDRRanges(env, country);
+  
+  // Always include default range
+  const allRanges = ['10.66.0.0/32', ...ranges];
+  
+  // Select random range
+  const selectedRange = allRanges[Math.floor(Math.random() * allRanges.length)];
+  
+  // Parse CIDR
+  const [baseIP, prefix] = selectedRange.split('/');
+  const prefixNum = parseInt(prefix);
+  
+  // For /32, use the exact IP
+  if (prefixNum === 32) {
+    return baseIP;
+  }
+  
+  // For other ranges, generate random IP within range
+  const parts = baseIP.split('.').map(Number);
+  const hostBits = 32 - prefixNum;
+  const maxHosts = Math.pow(2, hostBits) - 2; // -2 for network and broadcast
+  const hostNum = (userId % maxHosts) + 1;
+  
+  // Calculate IP
+  let ip = (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
+  ip = (ip & ~((1 << hostBits) - 1)) | hostNum;
+  
+  return [
+    (ip >>> 24) & 0xFF,
+    (ip >>> 16) & 0xFF,
+    (ip >>> 8) & 0xFF,
+    ip & 0xFF
+  ].join('.');
+}
+
+// Get CIDR ranges for country
+async function getCIDRRanges(env, country) {
+  const rangesKey = `cidr:${country}`;
+  const data = await env.DB.get(rangesKey);
+  
+  if (!data) return [];
+  
+  try {
+    const ranges = JSON.parse(data);
+    return ranges.ranges || [];
+  } catch {
+    return [];
+  }
+}
+
+// Save CIDR ranges for country
+async function saveCIDRRanges(env, country, ranges) {
+  const rangesKey = `cidr:${country}`;
+  await env.DB.put(rangesKey, JSON.stringify({
+    country,
+    ranges,
+    updatedAt: new Date().toISOString()
+  }));
 }
 
 // DNS Providers
@@ -219,29 +276,39 @@ const DNS_PROVIDERS = {
   }
 };
 
-// Get DNS keyboard
+// Get DNS keyboard with better layout
 function getDNSKeyboard() {
   return {
     inline_keyboard: [
       [
-        { text: DNS_PROVIDERS.radar.name, callback_data: 'wg_dns_radar' },
-        { text: DNS_PROVIDERS.cloudflare_google.name, callback_data: 'wg_dns_cloudflare_google' }
+        { text: '🌍 ' + DNS_PROVIDERS.cloudflare_google.name, callback_data: 'wg_dns_cloudflare_google' }
       ],
       [
-        { text: DNS_PROVIDERS.opendns.name, callback_data: 'wg_dns_opendns' },
-        { text: DNS_PROVIDERS.electro.name, callback_data: 'wg_dns_electro' }
+        { text: '🔒 ' + DNS_PROVIDERS.opendns.name, callback_data: 'wg_dns_opendns' }
       ],
       [
-        { text: DNS_PROVIDERS.shecan.name, callback_data: 'wg_dns_shecan' },
-        { text: DNS_PROVIDERS.pishgaman.name, callback_data: 'wg_dns_pishgaman' }
+        { text: '📡 ' + DNS_PROVIDERS.radar.name, callback_data: 'wg_dns_radar' }
       ],
       [
-        { text: DNS_PROVIDERS.shatel.name, callback_data: 'wg_dns_shatel' },
-        { text: DNS_PROVIDERS['403'].name, callback_data: 'wg_dns_403' }
+        { text: '⚡ ' + DNS_PROVIDERS.electro.name, callback_data: 'wg_dns_electro' }
       ],
       [
-        { text: DNS_PROVIDERS.begzar.name, callback_data: 'wg_dns_begzar' },
-        { text: DNS_PROVIDERS.hostiran.name, callback_data: 'wg_dns_hostiran' }
+        { text: '🔓 ' + DNS_PROVIDERS.shecan.name, callback_data: 'wg_dns_shecan' }
+      ],
+      [
+        { text: '🌐 ' + DNS_PROVIDERS.pishgaman.name, callback_data: 'wg_dns_pishgaman' }
+      ],
+      [
+        { text: '📶 ' + DNS_PROVIDERS.shatel.name, callback_data: 'wg_dns_shatel' }
+      ],
+      [
+        { text: '🚀 ' + DNS_PROVIDERS['403'].name, callback_data: 'wg_dns_403' }
+      ],
+      [
+        { text: '🔑 ' + DNS_PROVIDERS.begzar.name, callback_data: 'wg_dns_begzar' }
+      ],
+      [
+        { text: '☁️ ' + DNS_PROVIDERS.hostiran.name, callback_data: 'wg_dns_hostiran' }
       ],
       [
         { text: '🔙 بازگشت', callback_data: 'back_to_main' }
@@ -386,6 +453,10 @@ function getAdminKeyboard() {
         { text: '📋 لیست DNS', callback_data: 'admin_list_dns' }
       ],
       [
+        { text: '📐 مدیریت CIDR', callback_data: 'admin_cidr' },
+        { text: '📋 لیست CIDR', callback_data: 'admin_list_cidr' }
+      ],
+      [
         { text: '🔙 بازگشت', callback_data: 'back_to_main' }
       ]
     ]
@@ -397,29 +468,9 @@ function getCountryKeyboard(type) {
   return {
     inline_keyboard: [
       [
-        { text: '🇮🇷 ایران', callback_data: `country_IR_${type}` },
-        { text: '🇺🇸 آمریکا', callback_data: `country_US_${type}` },
-        { text: '🇩🇪 آلمان', callback_data: `country_DE_${type}` }
-      ],
-      [
-        { text: '🇬🇧 انگلیس', callback_data: `country_GB_${type}` },
-        { text: '🇫🇷 فرانسه', callback_data: `country_FR_${type}` },
-        { text: '🇳🇱 هلند', callback_data: `country_NL_${type}` }
-      ],
-      [
         { text: '🇨🇦 کانادا', callback_data: `country_CA_${type}` },
-        { text: '🇯🇵 ژاپن', callback_data: `country_JP_${type}` },
-        { text: '🇸🇬 سنگاپور', callback_data: `country_SG_${type}` }
-      ],
-      [
-        { text: '🇦🇪 امارات', callback_data: `country_AE_${type}` },
-        { text: '🇹🇷 ترکیه', callback_data: `country_TR_${type}` },
-        { text: '🇸🇪 سوئد', callback_data: `country_SE_${type}` }
-      ],
-      [
-        { text: '🇦🇺 استرالیا', callback_data: `country_AU_${type}` },
-        { text: '🇧🇷 برزیل', callback_data: `country_BR_${type}` },
-        { text: '🇮🇳 هند', callback_data: `country_IN_${type}` }
+        { text: '🇶🇦 قطر', callback_data: `country_QA_${type}` },
+        { text: '🇧🇪 بلژیک', callback_data: `country_BE_${type}` }
       ],
       [
         { text: '🔙 بازگشت', callback_data: 'admin_panel' }
@@ -428,13 +479,64 @@ function getCountryKeyboard(type) {
   };
 }
 
+// Get country keyboard with availability info
+async function getCountryKeyboardWithAvailability(env, type) {
+  const countries = ['CA', 'QA', 'BE'];
+  
+  // Get all endpoints and DNS
+  const endpointsList = await env.DB.list({ prefix: 'endpoint:' });
+  const dnsList = await env.DB.list({ prefix: 'dns:' });
+  
+  // Count by country
+  const availability = {};
+  for (const country of countries) {
+    availability[country] = { endpoints: 0, dns: 0 };
+  }
+  
+  for (const key of endpointsList.keys) {
+    const data = await env.DB.get(key.name);
+    if (data) {
+      const ep = JSON.parse(data);
+      if (availability[ep.country]) {
+        availability[ep.country].endpoints++;
+      }
+    }
+  }
+  
+  for (const key of dnsList.keys) {
+    const data = await env.DB.get(key.name);
+    if (data) {
+      const dns = JSON.parse(data);
+      if (availability[dns.country]) {
+        availability[dns.country].dns++;
+      }
+    }
+  }
+  
+  // Build keyboard with availability
+  const keyboard = [];
+  
+  // Single row with 3 countries
+  keyboard.push([
+    { text: `🇨🇦 کانادا (${availability.CA.endpoints}/${availability.CA.dns})`, callback_data: `country_CA_${type}` },
+    { text: `🇶🇦 قطر (${availability.QA.endpoints}/${availability.QA.dns})`, callback_data: `country_QA_${type}` },
+    { text: `🇧🇪 بلژیک (${availability.BE.endpoints}/${availability.BE.dns})`, callback_data: `country_BE_${type}` }
+  ]);
+  
+  // Back button
+  keyboard.push([
+    { text: '🔙 بازگشت', callback_data: 'back_to_main' }
+  ]);
+  
+  return { inline_keyboard: keyboard };
+}
+
 // Get country flag
 function getCountryFlag(countryCode) {
   const flags = {
-    'IR': '🇮🇷', 'US': '🇺🇸', 'DE': '🇩🇪', 'GB': '🇬🇧',
-    'FR': '🇫🇷', 'NL': '🇳🇱', 'CA': '🇨🇦', 'JP': '🇯🇵',
-    'SG': '🇸🇬', 'AE': '🇦🇪', 'TR': '🇹🇷', 'SE': '🇸🇪',
-    'AU': '🇦🇺', 'BR': '🇧🇷', 'IN': '🇮🇳'
+    'CA': '🇨🇦',
+    'QA': '🇶🇦',
+    'BE': '🇧🇪'
   };
   return flags[countryCode] || '🌍';
 }
@@ -442,21 +544,21 @@ function getCountryFlag(countryCode) {
 // Get country name
 function getCountryName(countryCode) {
   const names = {
-    'IR': 'ایران', 'US': 'آمریکا', 'DE': 'آلمان', 'GB': 'انگلیس',
-    'FR': 'فرانسه', 'NL': 'هلند', 'CA': 'کانادا', 'JP': 'ژاپن',
-    'SG': 'سنگاپور', 'AE': 'امارات', 'TR': 'ترکیه', 'SE': 'سوئد',
-    'AU': 'استرالیا', 'BR': 'برزیل', 'IN': 'هند'
+    'CA': 'کانادا',
+    'QA': 'قطر',
+    'BE': 'بلژیک'
   };
   return names[countryCode] || 'نامشخص';
 }
 
-// Handle WireGuard button - show country selection
+// Handle WireGuard button - show country selection with availability
 async function handleWireGuardButton(chatId, userId, username, env, callbackQueryId) {
   await answerCallbackQuery(env.BOT_TOKEN, callbackQueryId);
   
-  const message = `🔐 <b>ساخت کانفیگ WireGuard</b>\n\n🌍 لطفاً لوکیشن (کشور) مورد نظر خود را انتخاب کنید:`;
+  const message = `🔐 <b>ساخت کانفیگ WireGuard</b>\n\n🌍 لطفاً لوکیشن (کشور) مورد نظر خود را انتخاب کنید:\n\n💡 <i>اعداد نشان‌دهنده تعداد Endpoint و DNS موجود هستند</i>`;
   
-  await sendTelegramMessage(env.BOT_TOKEN, chatId, message, getCountryKeyboard('wg_location'));
+  const keyboard = await getCountryKeyboardWithAvailability(env, 'wg_location');
+  await sendTelegramMessage(env.BOT_TOKEN, chatId, message, keyboard);
 }
 
 // Handle WireGuard location selection
@@ -467,7 +569,7 @@ async function handleWireGuardLocation(chatId, userId, username, country, env, c
   
   const flag = getCountryFlag(country);
   const countryName = getCountryName(country);
-  const message = `${flag} <b>${countryName}</b>\n\n🌐 لطفاً سرویس DNS مورد نظر خود را انتخاب کنید:`;
+  const message = `${flag} <b>${countryName}</b>\n\n🌐 <b>انتخاب سرویس DNS</b>\n\n💡 <i>DNS مناسب خود را انتخاب کنید:\n\n🌍 بین‌المللی - برای دسترسی جهانی\n📡 ایرانی - برای سرعت بیشتر در ایران</i>`;
   
   await sendTelegramMessage(env.BOT_TOKEN, chatId, message, getDNSKeyboard());
 }
@@ -499,7 +601,7 @@ async function handleKeepaliveSelection(chatId, userId, username, keepalive, env
     
     // Generate keys
     const { privateKey, publicKey } = await generateWireGuardKeys();
-    const clientIP = generateClientIP(userId);
+    const clientIP = await generateClientIP(userId, country, env);
     
     // Get random endpoint for selected country
     const endpoint = await getRandomEndpoint(env, country);
@@ -925,6 +1027,65 @@ async function handleAdminListDNS(chatId, env, callbackQueryId) {
   await sendTelegramMessage(env.BOT_TOKEN, chatId, message, getAdminKeyboard());
 }
 
+// Handle CIDR management
+async function handleAdminCIDR(chatId, env, callbackQueryId) {
+  await answerCallbackQuery(env.BOT_TOKEN, callbackQueryId);
+  
+  const message = `📐 <b>مدیریت CIDR Range</b>\n\n📍 لطفاً کشور مورد نظر را انتخاب کنید:`;
+  
+  await sendTelegramMessage(env.BOT_TOKEN, chatId, message, getCountryKeyboard('cidr'));
+}
+
+// Handle CIDR country selection
+async function handleCIDRCountrySelection(chatId, country, env, callbackQueryId) {
+  await answerCallbackQuery(env.BOT_TOKEN, callbackQueryId);
+  
+  await env.DB.put(`session:${chatId}:cidr_country`, country, { expirationTtl: 300 });
+  await env.DB.put(`session:${chatId}:waiting_cidr`, 'true', { expirationTtl: 300 });
+  
+  const flag = getCountryFlag(country);
+  const countryName = getCountryName(country);
+  
+  const message = `${flag} <b>افزودن CIDR Range برای ${countryName}</b>\n\n📝 لطفاً لیست CIDR Range ها را ارسال کنید:\n\n<i>فرمت: هر خط یک CIDR\nمثال:\n10.66.0.0/24\n172.16.0.0/16\n192.168.1.0/24\n\nنکته: Range پیش‌فرض 10.66.0.0/32 همیشه اضافه می‌شود</i>`;
+  
+  await sendTelegramMessage(env.BOT_TOKEN, chatId, message);
+}
+
+// Handle list CIDR
+async function handleAdminListCIDR(chatId, env, callbackQueryId) {
+  await answerCallbackQuery(env.BOT_TOKEN, callbackQueryId);
+  
+  const list = await env.DB.list({ prefix: 'cidr:' });
+  
+  if (list.keys.length === 0) {
+    await sendTelegramMessage(
+      env.BOT_TOKEN,
+      chatId,
+      '📐 <b>لیست CIDR Range</b>\n\n⚠️ هیچ CIDR ثبت شده‌ای وجود ندارد.',
+      getAdminKeyboard()
+    );
+    return;
+  }
+  
+  let message = '📐 <b>لیست CIDR Range های ثبت شده</b>\n\n';
+  
+  for (const key of list.keys) {
+    const data = await env.DB.get(key.name);
+    if (data) {
+      const cidr = JSON.parse(data);
+      const flag = getCountryFlag(cidr.country);
+      const countryName = getCountryName(cidr.country);
+      message += `\n${flag} <b>${countryName}</b>\n`;
+      message += `  • پیش‌فرض: <code>10.66.0.0/32</code>\n`;
+      cidr.ranges.forEach(range => {
+        message += `  • <code>${range}</code>\n`;
+      });
+    }
+  }
+  
+  await sendTelegramMessage(env.BOT_TOKEN, chatId, message, getAdminKeyboard());
+}
+
 // Handle admin stats
 async function handleAdminStats(chatId, env, callbackQueryId) {
   await answerCallbackQuery(env.BOT_TOKEN, callbackQueryId);
@@ -932,16 +1093,9 @@ async function handleAdminStats(chatId, env, callbackQueryId) {
   const stats = await getBotStats(env);
   const dnsList = await env.DB.list({ prefix: 'dns:' });
   const endpointsList = await env.DB.list({ prefix: 'endpoint:' });
+  const cidrList = await env.DB.list({ prefix: 'cidr:' });
   
-  const message = `📊 <b>آمار کامل ربات</b>
-
-👥 کل کاربران: <b>${stats.totalUsers}</b>
-🔐 کل کانفیگ‌ها: <b>${stats.totalConfigs}</b>
-🌐 کل DNS ها: <b>${dnsList.keys.length}</b>
-🔗 کل Endpoint ها: <b>${endpointsList.keys.length}</b>
-💾 وضعیت KV: ${stats.kvStatus}
-📡 وضعیت ربات: ${stats.uptime}
-⏰ آخرین بروزرسانی: ${new Date(stats.timestamp).toLocaleString('fa-IR')}`;
+  const message = `📊 <b>آمار کامل ربات</b>\n\n👥 کل کاربران: <b>${stats.totalUsers}</b>\n🔐 کل کانفیگ‌ها: <b>${stats.totalConfigs}</b>\n🌐 کل DNS ها: <b>${dnsList.keys.length}</b>\n🔗 کل Endpoint ها: <b>${endpointsList.keys.length}</b>\n📐 کل CIDR ها: <b>${cidrList.keys.length}</b>\n💾 وضعیت KV: ${stats.kvStatus}\n📡 وضعیت ربات: ${stats.uptime}\n⏰ آخرین بروزرسانی: ${new Date(stats.timestamp).toLocaleString('fa-IR')}`;
   
   await sendTelegramMessage(env.BOT_TOKEN, chatId, message, getAdminKeyboard());
 }
@@ -1022,6 +1176,19 @@ export async function handleUpdate(update, env, ctx) {
         if (isAdmin(userId, env)) {
           await handleAdminStats(chatId, env, callbackQuery.id);
         }
+      } else if (data === 'admin_cidr') {
+        if (isAdmin(userId, env)) {
+          await handleAdminCIDR(chatId, env, callbackQuery.id);
+        }
+      } else if (data === 'admin_list_cidr') {
+        if (isAdmin(userId, env)) {
+          await handleAdminListCIDR(chatId, env, callbackQuery.id);
+        }
+      } else if (data.startsWith('country_') && data.includes('_cidr')) {
+        if (isAdmin(userId, env)) {
+          const country = data.replace('country_', '').replace('_cidr', '');
+          await handleCIDRCountrySelection(chatId, country, env, callbackQuery.id);
+        }
       } else if (data === 'admin_dns_type_ipv4' || data === 'admin_dns_type_ipv6') {
         if (isAdmin(userId, env)) {
           const type = data.replace('admin_dns_type_', '');
@@ -1078,6 +1245,49 @@ export async function handleUpdate(update, env, ctx) {
       await env.DB.delete(`session:${chatId}:waiting_endpoints`);
       await env.DB.delete(`session:${chatId}:endpoint_country`);
       await AdminHandlers.processEndpoints(chatId, text, env, sendTelegramMessage, getAdminKeyboard, getCountryFlag, getCountryName);
+      return;
+    }
+    
+    // Check if admin is adding CIDR
+    const waitingCIDR = await env.DB.get(`session:${chatId}:waiting_cidr`);
+    if (waitingCIDR === 'true' && isAdmin(userId, env)) {
+      const country = await env.DB.get(`session:${chatId}:cidr_country`);
+      
+      await env.DB.delete(`session:${chatId}:waiting_cidr`);
+      await env.DB.delete(`session:${chatId}:cidr_country`);
+      
+      // Parse CIDR ranges
+      const lines = text.split('\n').filter(line => line.trim());
+      const validRanges = [];
+      
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // Validate CIDR format
+        if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}\/[0-9]{1,2}$/.test(trimmed)) {
+          validRanges.push(trimmed);
+        }
+      }
+      
+      if (validRanges.length > 0) {
+        await saveCIDRRanges(env, country, validRanges);
+        
+        const flag = getCountryFlag(country);
+        const countryName = getCountryName(country);
+        
+        await sendTelegramMessage(
+          env.BOT_TOKEN,
+          chatId,
+          `✅ <b>CIDR Range ها اضافه شدند</b>\n\n${flag} کشور: ${countryName}\n✔️ تعداد: ${validRanges.length}\n\n📐 Range ها:\n${validRanges.map(r => `  • <code>${r}</code>`).join('\n')}`,
+          getAdminKeyboard()
+        );
+      } else {
+        await sendTelegramMessage(
+          env.BOT_TOKEN,
+          chatId,
+          '❌ هیچ CIDR معتبری یافت نشد. فرمت صحیح: 10.66.0.0/24',
+          getAdminKeyboard()
+        );
+      }
       return;
     }
     
@@ -1197,6 +1407,14 @@ function generateWebPanel() {
     .loading { text-align: center; padding: 40px; color: #667eea; font-size: 1.2em; }
     .empty-state { text-align: center; padding: 60px 20px; color: #999; }
     .action-buttons { display: flex; gap: 10px; margin-bottom: 20px; }
+    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+    .modal.active { display: flex; }
+    .modal-content { background: white; padding: 30px; border-radius: 15px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
+    .modal-content h3 { color: #667eea; margin-bottom: 20px; }
+    .form-group { margin-bottom: 20px; }
+    .form-group label { display: block; margin-bottom: 8px; color: #333; font-weight: bold; }
+    .form-group input, .form-group select, .form-group textarea { width: 100%; padding: 12px; border: 2px solid #ddd; border-radius: 8px; font-size: 1em; font-family: inherit; }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: #667eea; }
   </style>
 </head>
 <body>
@@ -1207,16 +1425,18 @@ function generateWebPanel() {
       <div class="stat-card"><div class="stat-label">🔐 کل کانفیگ‌ها</div><div class="stat-value" id="totalConfigs">-</div></div>
       <div class="stat-card"><div class="stat-label">🌐 کل DNS ها</div><div class="stat-value" id="totalDNS">-</div></div>
       <div class="stat-card"><div class="stat-label">🔗 کل Endpoint ها</div><div class="stat-value" id="totalEndpoints">-</div></div>
+      <div class="stat-card"><div class="stat-label">💾 وضعیت KV</div><div class="stat-value" id="kvStatus">-</div></div>
     </div>
     <div class="tabs">
       <button class="tab active" onclick="switchTab('dns')">🌐 مدیریت DNS</button>
       <button class="tab" onclick="switchTab('endpoints')">🔗 مدیریت Endpoint</button>
+      <button class="tab" onclick="switchTab('cidr')">📐 مدیریت CIDR</button>
     </div>
     <div id="dns-tab" class="tab-content active">
       <div class="section">
         <h2>🌐 مدیریت DNS</h2>
         <div class="action-buttons">
-          <button class="btn btn-success" onclick="initDNS()">🔄 بارگذاری DNS پیش‌فرض</button>
+          <button class="btn btn-success" onclick="showAddDNSModal()">➕ افزودن DNS</button>
           <button class="btn btn-primary" onclick="loadDNS()">🔄 بروزرسانی</button>
         </div>
         <div id="dnsList" class="loading">در حال بارگذاری...</div>
@@ -1226,10 +1446,91 @@ function generateWebPanel() {
       <div class="section">
         <h2>🔗 مدیریت Endpoint</h2>
         <div class="action-buttons">
+          <button class="btn btn-success" onclick="showAddEndpointModal()">➕ افزودن Endpoint</button>
           <button class="btn btn-primary" onclick="loadEndpoints()">🔄 بروزرسانی</button>
         </div>
         <div id="endpointsList" class="loading">در حال بارگذاری...</div>
       </div>
+    </div>
+    <div id="cidr-tab" class="tab-content">
+      <div class="section">
+        <h2>📐 مدیریت CIDR Range</h2>
+        <div class="action-buttons">
+          <button class="btn btn-success" onclick="showAddCIDRModal()">➕ افزودن CIDR</button>
+          <button class="btn btn-primary" onclick="loadCIDR()">🔄 بروزرسانی</button>
+        </div>
+        <div id="cidrList" class="loading">در حال بارگذاری...</div>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Add DNS Modal -->
+  <div id="addDNSModal" class="modal" onclick="if(event.target===this) closeModal('addDNSModal')">
+    <div class="modal-content">
+      <h3>➕ افزودن DNS</h3>
+      <form onsubmit="addDNS(event)">
+        <div class="form-group">
+          <label>کشور:</label>
+          <select id="dnsCountry" required></select>
+        </div>
+        <div class="form-group">
+          <label>نوع:</label>
+          <select id="dnsType" required>
+            <option value="ipv4">IPv4</option>
+            <option value="ipv6">IPv6</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>آدرس DNS (هر خط یکی):</label>
+          <textarea id="dnsAddresses" rows="5" placeholder="1.1.1.1&#10;8.8.8.8" required></textarea>
+        </div>
+        <div class="action-buttons">
+          <button type="submit" class="btn btn-primary">✅ ذخیره</button>
+          <button type="button" class="btn btn-danger" onclick="closeModal('addDNSModal')">❌ انصراف</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  
+  <!-- Add Endpoint Modal -->
+  <div id="addEndpointModal" class="modal" onclick="if(event.target===this) closeModal('addEndpointModal')">
+    <div class="modal-content">
+      <h3>➕ افزودن Endpoint</h3>
+      <form onsubmit="addEndpoint(event)">
+        <div class="form-group">
+          <label>کشور:</label>
+          <select id="endpointCountry" required></select>
+        </div>
+        <div class="form-group">
+          <label>آدرس Endpoint (هر خط یکی):</label>
+          <textarea id="endpointAddresses" rows="5" placeholder="1.2.3.4:51820&#10;5.6.7.8:51820" required></textarea>
+        </div>
+        <div class="action-buttons">
+          <button type="submit" class="btn btn-primary">✅ ذخیره</button>
+          <button type="button" class="btn btn-danger" onclick="closeModal('addEndpointModal')">❌ انصراف</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  
+  <!-- Add CIDR Modal -->
+  <div id="addCIDRModal" class="modal" onclick="if(event.target===this) closeModal('addCIDRModal')">
+    <div class="modal-content">
+      <h3>➕ افزودن CIDR Range</h3>
+      <form onsubmit="addCIDR(event)">
+        <div class="form-group">
+          <label>کشور:</label>
+          <select id="cidrCountry" required></select>
+        </div>
+        <div class="form-group">
+          <label>CIDR Range ها (هر خط یکی):</label>
+          <textarea id="cidrRanges" rows="5" placeholder="10.100.0.0/24&#10;172.16.0.0/16" required></textarea>
+        </div>
+        <div class="action-buttons">
+          <button type="submit" class="btn btn-primary">✅ ذخیره</button>
+          <button type="button" class="btn btn-danger" onclick="closeModal('addCIDRModal')">❌ انصراف</button>
+        </div>
+      </form>
     </div>
   </div>
   <script>
@@ -1240,6 +1541,7 @@ function generateWebPanel() {
       document.getElementById(tab + '-tab').classList.add('active');
       if (tab === 'dns') loadDNS();
       if (tab === 'endpoints') loadEndpoints();
+      if (tab === 'cidr') loadCIDR();
     }
     async function loadStats() {
       try {
@@ -1249,7 +1551,38 @@ function generateWebPanel() {
         document.getElementById('totalConfigs').textContent = d.totalConfigs || 0;
         document.getElementById('totalDNS').textContent = d.totalDNS || 0;
         document.getElementById('totalEndpoints').textContent = d.totalEndpoints || 0;
+        document.getElementById('kvStatus').innerHTML = d.kvStatus || '❓';
       } catch (e) { console.error(e); }
+    }
+    async function loadCountries() {
+      try {
+        const r = await fetch('/api/countries/list');
+        const countries = await r.json();
+        return countries.map(c => \`<option value="\${c.code}">\${c.flag} \${c.name}</option>\`).join('');
+      } catch (e) {
+        return '<option value="">خطا در بارگذاری</option>';
+      }
+    }
+    function showAddDNSModal() {
+      loadCountries().then(html => {
+        document.getElementById('dnsCountry').innerHTML = html;
+        document.getElementById('addDNSModal').classList.add('active');
+      });
+    }
+    function showAddEndpointModal() {
+      loadCountries().then(html => {
+        document.getElementById('endpointCountry').innerHTML = html;
+        document.getElementById('addEndpointModal').classList.add('active');
+      });
+    }
+    function showAddCIDRModal() {
+      loadCountries().then(html => {
+        document.getElementById('cidrCountry').innerHTML = html;
+        document.getElementById('addCIDRModal').classList.add('active');
+      });
+    }
+    function closeModal(id) {
+      document.getElementById(id).classList.remove('active');
     }
     async function loadDNS() {
       const c = document.getElementById('dnsList');
@@ -1299,15 +1632,102 @@ function generateWebPanel() {
         loadStats();
       } catch (e) { alert('❌ خطا'); }
     }
-    async function initDNS() {
-      if (!confirm('بارگذاری DNS های پیش‌فرض؟')) return;
+    async function loadCIDR() {
+      const c = document.getElementById('cidrList');
+      c.innerHTML = '<div class="loading">در حال بارگذاری...</div>';
       try {
-        const r = await fetch('/api/dns/initialize', { method: 'POST' });
+        const r = await fetch('/api/cidr/list');
         const d = await r.json();
-        alert('✅ ' + d.count + ' DNS بارگذاری شد');
-        loadDNS();
+        if (d.length === 0) { c.innerHTML = '<div class="empty-state">هیچ CIDR ثبت شده‌ای وجود ندارد</div>'; return; }
+        let h = '<table><thead><tr><th>کشور</th><th>Range ها</th><th>عملیات</th></tr></thead><tbody>';
+        d.forEach(cidr => {
+          const ranges = cidr.ranges.map(r => \`<code>\${r}</code>\`).join('<br>');
+          h += \`<tr><td>\${cidr.flag} \${cidr.countryName}</td><td>\${ranges}</td><td><button class="btn btn-danger" onclick="deleteCIDR('\${cidr.country}')">🗑️</button></td></tr>\`;
+        });
+        h += '</tbody></table>';
+        c.innerHTML = h;
+      } catch (e) { c.innerHTML = '<div class="empty-state">خطا در بارگذاری</div>'; }
+    }
+    async function deleteCIDR(country) {
+      if (!confirm('حذف شود؟')) return;
+      try {
+        await fetch('/api/cidr/delete/' + country, { method: 'DELETE' });
+        alert('✅ حذف شد');
+        loadCIDR();
         loadStats();
       } catch (e) { alert('❌ خطا'); }
+    }
+    async function addDNS(e) {
+      e.preventDefault();
+      const country = document.getElementById('dnsCountry').value;
+      const type = document.getElementById('dnsType').value;
+      const addresses = document.getElementById('dnsAddresses').value.split('\\n').filter(l => l.trim());
+      
+      let successCount = 0;
+      for (const address of addresses) {
+        try {
+          const r = await fetch('/api/dns/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ country, type, address: address.trim() })
+          });
+          if (r.ok) successCount++;
+        } catch (e) {}
+      }
+      
+      closeModal('addDNSModal');
+      alert(\`✅ \${successCount} DNS اضافه شد\`);
+      loadDNS();
+      loadStats();
+      document.getElementById('dnsAddresses').value = '';
+    }
+    async function addEndpoint(e) {
+      e.preventDefault();
+      const country = document.getElementById('endpointCountry').value;
+      const addresses = document.getElementById('endpointAddresses').value.split('\\n').filter(l => l.trim());
+      
+      let successCount = 0;
+      for (const address of addresses) {
+        try {
+          const r = await fetch('/api/endpoints/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ country, address: address.trim() })
+          });
+          if (r.ok) successCount++;
+        } catch (e) {}
+      }
+      
+      closeModal('addEndpointModal');
+      alert(\`✅ \${successCount} Endpoint اضافه شد\`);
+      loadEndpoints();
+      loadStats();
+      document.getElementById('endpointAddresses').value = '';
+    }
+    async function addCIDR(e) {
+      e.preventDefault();
+      const country = document.getElementById('cidrCountry').value;
+      const ranges = document.getElementById('cidrRanges').value.split('\\n').filter(l => l.trim()).map(l => l.trim());
+      
+      try {
+        const r = await fetch('/api/cidr/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ country, ranges })
+        });
+        
+        if (r.ok) {
+          closeModal('addCIDRModal');
+          alert(\`✅ \${ranges.length} CIDR Range اضافه شد\`);
+          loadCIDR();
+          loadStats();
+          document.getElementById('cidrRanges').value = '';
+        } else {
+          alert('❌ خطا در افزودن');
+        }
+      } catch (e) {
+        alert('❌ خطا در ارتباط با سرور');
+      }
     }
     loadStats();
     loadDNS();
@@ -1510,9 +1930,6 @@ async function handleAPI(request, env, url) {
       const id = path.split('/').pop();
       return await deleteDNSAPI(env, id);
     }
-    if (path === '/api/dns/initialize' && method === 'POST') {
-      return await initializeDNSAPI(env);
-    }
     
     // Endpoint APIs
     if (path === '/api/endpoints/list' && method === 'GET') {
@@ -1534,6 +1951,18 @@ async function handleAPI(request, env, url) {
       return await addCountryAPI(request, env);
     }
     
+    // CIDR APIs
+    if (path === '/api/cidr/list' && method === 'GET') {
+      return await getCIDRListAPI(env);
+    }
+    if (path === '/api/cidr/add' && method === 'POST') {
+      return await addCIDRAPI(request, env);
+    }
+    if (path.startsWith('/api/cidr/delete/') && method === 'DELETE') {
+      const country = path.split('/').pop();
+      return await deleteCIDRAPI(env, country);
+    }
+    
     return new Response('Not Found', { status: 404 });
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message }), {
@@ -1549,12 +1978,16 @@ async function getStatsAPI(env) {
   const dnsList = await env.DB.list({ prefix: 'dns:' });
   const endpointsList = await env.DB.list({ prefix: 'endpoint:' });
   
+  // Test KV connection
+  const kvConnected = await testKVConnection(env);
+  const kvStatusText = kvConnected ? '✅ متصل' : '❌ قطع';
+  
   return new Response(JSON.stringify({
     totalUsers: stats.totalUsers,
     totalConfigs: stats.totalConfigs,
     totalDNS: dnsList.keys.length,
     totalEndpoints: endpointsList.keys.length,
-    kvStatus: stats.kvStatus,
+    kvStatus: kvStatusText,
     botStatus: stats.uptime
   }), {
     headers: { 'Content-Type': 'application/json' }
@@ -1612,16 +2045,6 @@ async function deleteDNSAPI(env, id) {
   });
 }
 
-// API: Initialize default DNS
-async function initializeDNSAPI(env) {
-  const { initializeAllDefaultDNS } = await import('./default-dns.js');
-  const count = await initializeAllDefaultDNS(env);
-  
-  return new Response(JSON.stringify({ success: true, count }), {
-    headers: { 'Content-Type': 'application/json' }
-  });
-}
-
 // API: Get endpoints list
 async function getEndpointsListAPI(env) {
   const list = await env.DB.list({ prefix: 'endpoint:' });
@@ -1675,21 +2098,9 @@ async function deleteEndpointAPI(env, id) {
 // API: Get countries list
 async function getCountriesListAPI(env) {
   const countries = [
-    { code: 'IR', name: 'ایران', flag: '🇮🇷' },
-    { code: 'US', name: 'آمریکا', flag: '🇺🇸' },
-    { code: 'DE', name: 'آلمان', flag: '🇩🇪' },
-    { code: 'GB', name: 'انگلیس', flag: '🇬🇧' },
-    { code: 'FR', name: 'فرانسه', flag: '🇫🇷' },
-    { code: 'NL', name: 'هلند', flag: '🇳🇱' },
     { code: 'CA', name: 'کانادا', flag: '🇨🇦' },
-    { code: 'JP', name: 'ژاپن', flag: '🇯🇵' },
-    { code: 'SG', name: 'سنگاپور', flag: '🇸🇬' },
-    { code: 'AE', name: 'امارات', flag: '🇦🇪' },
-    { code: 'TR', name: 'ترکیه', flag: '🇹🇷' },
-    { code: 'SE', name: 'سوئد', flag: '🇸🇪' },
-    { code: 'AU', name: 'استرالیا', flag: '🇦🇺' },
-    { code: 'BR', name: 'برزیل', flag: '🇧🇷' },
-    { code: 'IN', name: 'هند', flag: '🇮🇳' }
+    { code: 'QA', name: 'قطر', flag: '🇶🇦' },
+    { code: 'BE', name: 'بلژیک', flag: '🇧🇪' }
   ];
   
   // Count DNS and endpoints for each country
@@ -1750,6 +2161,51 @@ async function addCountryAPI(request, env) {
       isDefault: true
     }));
   }
+  
+  return new Response(JSON.stringify({ success: true }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+// API: Get CIDR list
+async function getCIDRListAPI(env) {
+  const list = await env.DB.list({ prefix: 'cidr:' });
+  const cidrItems = [];
+  
+  for (const key of list.keys) {
+    const data = await env.DB.get(key.name);
+    if (data) {
+      const cidr = JSON.parse(data);
+      cidrItems.push({
+        country: cidr.country,
+        ranges: ['10.66.0.0/32', ...cidr.ranges],
+        flag: getCountryFlag(cidr.country),
+        countryName: getCountryName(cidr.country),
+        updatedAt: cidr.updatedAt
+      });
+    }
+  }
+  
+  return new Response(JSON.stringify(cidrItems), {
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+// API: Add CIDR
+async function addCIDRAPI(request, env) {
+  const { country, ranges } = await request.json();
+  
+  await saveCIDRRanges(env, country, ranges);
+  
+  return new Response(JSON.stringify({ success: true }), {
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+// API: Delete CIDR
+async function deleteCIDRAPI(env, country) {
+  const rangesKey = `cidr:${country}`;
+  await env.DB.delete(rangesKey);
   
   return new Response(JSON.stringify({ success: true }), {
     headers: { 'Content-Type': 'application/json' }

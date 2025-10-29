@@ -1,0 +1,14 @@
+{
+  "name": "wireguard-telegram-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Telegram bot for WireGuard config generation on Cloudflare Pages",
+  "main": "main.js",
+  "scripts": {
+    "dev": "wrangler pages dev",
+    "deploy": "wrangler pages deploy"
+  },
+  "keywords": ["telegram", "wireguard", "cloudflare", "pages"],
+  "author": "",
+  "license": "MIT"
+}
