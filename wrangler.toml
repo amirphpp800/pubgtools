@@ -1,0 +1,14 @@
+name = "wireguard-telegram-bot"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "DB"
+id = "YOUR_KV_NAMESPACE_ID"
+
+[vars]
+WG_SERVER_PUBLIC_KEY = "YOUR_SERVER_PUBLIC_KEY"
+WG_SERVER_ENDPOINT = "YOUR_SERVER_IP:51820"
+
+# Secrets (set via Cloudflare Pages dashboard):
+# BOT_TOKEN = "your_telegram_bot_token"
+# ADMIN_ID = "your_telegram_user_id"
